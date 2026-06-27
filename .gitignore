@@ -1,0 +1,21 @@
+__pycache__/
+
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Test / lint caches
+.tox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# claude
+CLAUDE.md
