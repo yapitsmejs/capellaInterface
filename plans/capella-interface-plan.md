@@ -17,7 +17,7 @@ Pipeline order: **L1 → L2 → L2LCR → L2ML**. L2ML is last because proper mu
 
 Catalog facts (download side):
 - Root STAC catalog (static, not a STAC API): `https://capella-open-data.s3.us-west-2.amazonaws.com/stac/catalog.json`
-- Sub-catalogs organize data by product type / instrument mode / use case / capital / datetime, plus an `IEEE Data Contest 2026` collection. We target the **`slc`** product-type collection only.
+- Sub-catalogs organize data by product type / instrument mode / use case / capital / datetime, plus an `IEEE Data Contest 2026` STAC collection (`capella-open-data-ieee-data-contest`) that ships paired **SLC+GEO** Spotlight items (mixed HH/VV, ~Jul–Nov 2025). We target SLC items from **both** the `slc` product-type collection **and** the IEEE contest collection — the contest's SLC items are included in search **by default**; its GEO pairs are skipped. The same acquisition can appear in both collections, so results are deduped by `item.id`.
 - Assets live in anonymous bucket `s3://capella-open-data/data/` (region `us-west-2`, `--no-sign-request`). Download via HTTP GET on the asset `href`.
 - Each SLC scene = a 3-file TIFF+JSON bundle: complex COG (CInt16: 16-bit real + 16-bit imag) + STAC metadata JSON + extended metadata JSON (image geometry: PFA `slant_plane_normal`/`ground_plane_normal`, orbit state vectors, Doppler, sample spacing — the inputs the SAR-geocoding backend needs).
 
@@ -50,7 +50,8 @@ Helpers `products_for(level)`, `is_derived(level)`, `input_level(level)`. `downl
 
 ### 3. Catalog client — `src/capella/catalog.py`
 Thin wrapper over `pystac.Catalog.from_file(root_url)`:
-- `CATALOG_ROOT` constant; `find_slc_items(*, bbox=None, datetime=None, instrument_mode=None, max_items=None)` walks the `slc` product-type collection, filters by `item.bbox` (shapely) and `item.datetime` (ISO str or `start/end` range), returns a lazy generator.
+- `CATALOG_ROOT` constant; two SLC source URLs: `SLC_COLLECTION_URL` (`…/capella-open-data-slc/collection.json`) and `IEEE_CONTEST_COLLECTION_URL` (`…/capella-open-data-ieee-data-contest/collection.json`).
+- `find_slc_items(*, bbox=None, datetime=None, instrument_mode=None, max_items=None, include_ieee_contest=True)` — by default walks **both** the `slc` product-type collection **and** the IEEE Data Contest 2026 collection. The contest collection ships paired SLC+GEO items, so filter to SLC only (`capella:product_type == "slc"` / item id contains `_SLC_`). Dedupe across the two sources by `item.id` (the same acquisition can appear in both). Filters by `item.bbox` (shapely) and `item.datetime` (ISO str or `start/end` range), returns a lazy generator. `include_ieee_contest=False` skips the contest collection (CLI `--no-ieee-contest`).
 - `item_assets(item)` resolves the asset dict by `roles`/media-type (never hardcode keys): `data`/`image/tiff` → complex COG; JSON media-types → STAC + extended metadata. Used by the downloader.
 
 ### 4. Downloader (SLC → L1) — `src/capella/download.py`
@@ -78,8 +79,8 @@ Abstraction over the geocoding/look-decomposition primitives the transforms need
 
 ### 7. CLI — `src/capella/cli.py` (Click)
 ```
-capella search   --bbox minX,minY,maxX,maxY [--datetime 2024-01] [--mode spotlight] [--limit 10]
-capella download [--bbox ...] [--datetime ...] [--limit N] --dest ./data       # SLC -> data/L1/<id>/
+capella search   --bbox minX,minY,maxX,maxY [--datetime 2024-01] [--mode spotlight] [--limit 10] [--no-ieee-contest]
+capella download [--bbox ...] [--datetime ...] [--limit N] [--no-ieee-contest] --dest ./data       # SLC -> data/L1/<id>/
 capella l2       <l1_scene_dir> --dem <dem.tif> --out l2.tif [--crs EPSG:..] [--res 5]
 capella l2lcr    <l1_scene_dir> --dem <dem.tif> --out l2lcr.tif [--n-looks 4] [--master 0]
 capella l2ml     <l2lcr_stack.tif> --out l2ml.tif
@@ -90,7 +91,7 @@ capella l2ml     <l2lcr_stack.tif> --out l2ml.tif
 
 ### 8. Tests — `tests/`
 - `tests/test_levels.py`: `DOWNLOAD_PRODUCTS` contains only SLC; `DERIVED_LEVELS` and `LEVEL_INPUT` correct (L2ML ← L2LCR); `download_level` refuses L2/L2LCR/L2ML.
-- `tests/test_catalog.py`: monkeypatch `pystac.Catalog.from_file` with an in-memory fixture catalog → assert SLC-only filtering by bbox/datetime; asset resolution by role.
+- `tests/test_catalog.py`: monkeypatch `pystac.Catalog.from_file` with in-memory fixture catalogs (an `slc` product-type collection + an IEEE contest collection with paired SLC/GEO items) → assert SLC-only filtering by bbox/datetime, IEEE SLC items included by default, GEO pairs skipped, cross-source dedupe by `item.id`, and `include_ieee_contest=False` drops contest items; asset resolution by role.
 - `tests/test_download.py`: monkeypatch `requests.get` → canned bytes; assert 3-file bundle written + idempotent skip-on-size-match.
 - `tests/test_sar_backend.py`: monkeypatch the backend primitives to return known arrays; assert `detect` returns real amplitude; `subaperture_looks` returns `n_looks` arrays; `geocode_slc` shape matches requested grid.
 - `tests/test_transforms.py`: orchestration tests with the backend monkeypatched — `build_l2` writes a 2-band complex GeoTIFF + JSON; `build_l2lcr` writes `n_looks`-band stack + JSON with shifts (sub-pixel co-registration validated on synthetic shifted arrays, ±0.5 px); `build_l2ml` averages the L2LCR stack + detects → 1-band amplitude of the expected shape. Real geocoding validated only in the network smoke test (`@pytest.mark.network`).
@@ -127,8 +128,9 @@ Existing empty `src/`, `scripts/`, `tests/` are consumed as-is. No pre-existing 
 ## Verification
 1. `uv sync --extra dev` succeeds in repo root (rasterio wheel provides GDAL on Windows; sarsen/sarpy install via wheel).
 2. **Backend spike**: run a one-off `uv run python scripts/spike_capella_geocode.py` against a downloaded SLC + Copernicus DEM to confirm sarsen (or sarpy) ingests Capella SLC + extended metadata; record the working backend + any GCP fallback in the README before finalizing transforms.
-3. `uv run pytest -q` → unit tests green (SLC-only catalog filter, download idempotency, backend primitives with mocks, transform orchestration incl. L2ML-from-L2LCR, sub-pixel co-registration on synthetic arrays). Network tests skipped offline.
+3. `uv run pytest -q` → unit tests green (SLC-only catalog filter, IEEE contest SLC default-include / GEO-skip / cross-source dedupe, download idempotency, backend primitives with mocks, transform orchestration incl. L2ML-from-L2LCR, sub-pixel co-registration on synthetic arrays). Network tests skipped offline.
 4. Live smoke test (network; optional — auto-skip if offline):
+   - `uv run capella search --limit 3` (no area filter) lists SLC items including IEEE Data Contest 2026 SLC items by default; `--no-ieee-contest` drops them.
    - `uv run capella search --bbox ... --limit 3` lists 3 SLC items.
    - `uv run capella download --bbox ... --limit 1 --dest ./data` writes the SLC bundle under `data/L1/<id>/`; idempotent on rerun.
    - `uv run capella l2 ./data/L1/<id> --dem <copernicus_dem.tif> --out ./data/L2/<id>.tif` → 2-band complex GeoTIFF, UTM CRS, finite values.
