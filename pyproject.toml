@@ -1,0 +1,43 @@
+[project]
+name = "capella-interface"
+version = "0.1.0"
+description = "Download Capella Space SLC data and derive higher processing levels (L2/L2LCR/L2ML) locally."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Yap Joon Siong" }]
+# Download-side dependencies only. SAR processing deps (rasterio, sarsen,
+# sarpy, numpy, scipy, geopandas) are added when the transforms are implemented.
+dependencies = [
+    "pystac>=1.8",
+    "requests",
+    "click",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[project.scripts]
+capella = "capella.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/capella"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -19,3 +19,9 @@ venv/
 
 # claude
 CLAUDE.md
+
+# Downloaded data & DEMs (capellaInterface)
+data/
+*.tif
+*.ntf
+dems/
